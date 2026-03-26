@@ -1,0 +1,169 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>The Loom - P2P Data Weaver</title>
+    <link rel="icon"
+        href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🧶</text></svg>">
+    <link href="https://fonts.googleapis.com/css2?family=Outfit:wght@300;400;600;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="style.css">
+    <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+</head>
+
+<body>
+    <div class="video-background">
+        <video autoplay muted loop id="bg-video">
+        </video>
+    </div>
+
+    <div class="app-container">
+
+        <header class="app-header">
+            <h1 class="logo">
+                <span class="yarn-icon">🧶</span>
+                THE LOOM
+            </h1>
+            <p class="subtitle">Awaken the fragments. Weave the data.</p>
+        </header>
+
+        <nav class="mode-selector">
+            <button class="nav-btn active" data-target="tab-scatter">Scatterer</button>
+            <button class="nav-btn" data-target="tab-weave">Weaver</button>
+        </nav>
+
+        <main class="content-area">
+
+            <section id="tab-scatter" class="tab-content active">
+                <div class="card glass">
+                    <h2>Fragment your files</h2>
+                    <p class="instruction">Convert any file into secure noise and a .loom map.</p>
+
+                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                        <div style="flex: 1;">
+                            <label for="cudi-seed">Seed (Crypto Key):</label>
+                            <input type="password" id="cudi-seed" class="elegant-select" style="width: 100%;"
+                                placeholder="Secret Key (Empty = default)">
+                        </div>
+                        <div style="flex: 1;">
+                            <label for="fake-exts">Disguise:</label>
+                            <input type="text" id="fake-exts" class="elegant-select" style="width: 100%;"
+                                value=".dat,.tmp,.sys,.dll,.log,.chk" placeholder="e.g.: .dll,.mp3">
+                        </div>
+                        <div style="flex: 0.5;">
+                            <label for="chunk-size">Size:</label>
+                            <select id="chunk-size" class="elegant-select" style="width: 100%;">
+                                <option value="1048576">1 MB</option>
+                                <option value="4194304">4 MB</option>
+                                <option value="524288">512 KB</option>
+                            </select>
+                        </div>
+                    </div>
+
+                    <div id="memory-warning" class="hidden"
+                        style="color: var(--error); font-weight: 600; margin-bottom: 1rem; text-align: center;">
+                        Very large file (>2GB). Increase Block Size. It could saturate browser RAM.
+                    </div>
+
+                    <div class="drop-zone" id="drop-scatter">
+                        <div class="icon">⚗️</div>
+                        <h3>Drop your file here</h3>
+                        <p>Or click to select</p>
+                        <input type="file" id="file-scatter" hidden>
+                    </div>
+
+                    <div class="progress-container hidden" id="progress-scatter-container">
+                        <div class="progress-info">
+                            <span id="scatter-status">Processing...</span>
+                            <div>
+                                <span id="scatter-eta"
+                                    style="font-size: 0.85em; opacity: 0.8; margin-right: 15px;"></span>
+                                <span id="scatter-percentage">0%</span>
+                            </div>
+                        </div>
+                        <div class="progress-bar">
+                            <div class="progress-fill" id="scatter-fill"></div>
+                        </div>
+                        <button id="btn-cancel-scatter" class="action-btn hidden"
+                            style="background: var(--error); margin-top: 1rem; padding: 10px 20px;">Stop Loom</button>
+                    </div>
+                </div>
+            </section>
+
+            <section id="tab-weave" class="tab-content">
+                <div class="card glass">
+                    <h2>Reconstruct Data</h2>
+                    <p class="instruction">Upload the .loom file along with all its .bin fragments.</p>
+
+                    <div class="drop-zone" id="drop-weave">
+                        <div class="icon">🧶</div>
+                        <h3>Drop the .loom and .bin files here</h3>
+                        <p>Or click to select them at once</p>
+                        <input type="file" id="file-weave" class="file-weave" multiple hidden>
+                    </div>
+
+                    <div class="controls"
+                        style="margin-bottom: 1rem; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
+                        <h4 style="margin: 0 0 10px 0; font-size: 0.9em; opacity: 0.8;">Deterministic Recovery</h4>
+                        <div style="display:flex; gap: 10px;">
+                            <input type="text" id="weave-recover-name" class="elegant-select" style="flex: 1;"
+                                placeholder="Exact Original Name (e.g. data.zip)">
+                            <input type="password" id="weave-recover-seed" class="elegant-select" style="flex: 1;"
+                                placeholder="Cryptographic Key">
+                            <button id="btn-recover-map" class="action-btn" style="flex: 0.8; padding: 0 10px;">Force
+                                Map</button>
+                        </div>
+                    </div>
+
+                    <div class="weave-status hidden" id="weave-status-box">
+                        <h3>Weaving Status</h3>
+                        <div class="status-grid">
+                            <div class="status-item">
+                                <span class="label">Original File</span>
+                                <span class="value" id="weave-file-name">-</span>
+                            </div>
+                            <div class="status-item">
+                                <span class="label">Valid Fragments</span>
+                                <span class="value" id="weave-fragments">0 / 0</span>
+                            </div>
+                            <div class="status-item" id="corrupt-item" style="border-color: rgba(255,0,0,0.3)">
+                                <span class="label" style="color: var(--error)">Corrupted</span>
+                                <span class="value" id="weave-corrupts" style="color: var(--error)">0</span>
+                            </div>
+                        </div>
+
+                        <div class="progress-container">
+                            <div class="progress-info">
+                                <span id="weave-status-text">Analyzing...</span>
+                                <span id="weave-percentage">0%</span>
+                            </div>
+                            <div class="progress-bar">
+                                <div class="progress-fill highlight" id="weave-fill"></div>
+                            </div>
+                        </div>
+
+                        <div style="display: flex; gap: 10px; margin-top: 1rem;">
+                            <button class="action-btn hidden" id="btn-reconstruct">Reconstruct File</button>
+                            <button class="action-btn hidden" id="btn-cancel-weave"
+                                style="background: var(--error);">Stop Loom</button>
+                        </div>
+                    </div>
+                </div>
+            </section>
+
+        </main>
+    </div>
+
+    <div id="toast-container" class="toast-container"></div>
+
+    <script src="js/constants.js"></script>
+    <script src="js/utils.js"></script>
+    <script src="js/protocol.js"></script>
+    <script src="js/scatter.js"></script>
+    <script src="js/weaver.js"></script>
+    <script src="js/main.js"></script>
+</body>
+
+</html>
