@@ -52,12 +52,12 @@ function initScatterWorkers(num = navigator.hardwareConcurrency || 4) {
     currentWorkerIdx = 0;
 }
 
-const runScatterWorker = (buffer, hexId) => new Promise((resolve) => {
+const runScatterWorker = (buffer, hexId, fakeHexId = null, mode = 'NORMAL', password = 'default', saltHex = '') => new Promise((resolve) => {
     pendingTasks.set(hexId, resolve);
     const w = scatterWorkers[currentWorkerIdx];
     currentWorkerIdx = (currentWorkerIdx + 1) % scatterWorkers.length;
     const transfer = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
-    w.postMessage({ action: 'scatter', buffer, hexId }, [transfer]);
+    w.postMessage({ action: 'scatter', buffer, hexId, fakeHexId, mode, password, saltHex }, [transfer]);
 });
 
 function formatTime(secs) {
@@ -66,12 +66,21 @@ function formatTime(secs) {
 }
 
 async function handleScatter(file) {
+    if (file.name.toLowerCase().endsWith('.zip') && file.size > 4294967296) {
+        showToast("ZIP too large. Extract manually and drag fragments.", "error");
+        return;
+    }
     isScatterCancelled = false;
     initScatterWorkers();
 
     let chunkSize = parseInt(document.getElementById('chunk-size').value, 10) || CONSTANTS.DEFAULT_CHUNK_SIZE;
     const totalSize = file.size;
-    const seed = document.getElementById('cudi-seed').value.trim();
+    const seedInput = document.getElementById('cudi-seed').value;
+    const seed = seedInput ? seedInput.trim() : "";
+    const finalSeed = seed || "default";
+
+    const masterSaltBytes = crypto.getRandomValues(new Uint8Array(16));
+    const masterSaltHex = buffToHex(masterSaltBytes);
 
     if (totalSize > 500 * 1024 * 1024) {
         chunkSize = Math.max(chunkSize, 4 * 1024 * 1024);
@@ -156,15 +165,25 @@ async function handleScatter(file) {
         progStatus.textContent = `Preparing fragments...`;
         progFill.style.width = '0%';
 
+        const ddeModeSelect = document.getElementById('dde-mode');
+        const mode = ddeModeSelect ? ddeModeSelect.value : 'NORMAL';
+        const enableParity = document.getElementById('chk-parity') && document.getElementById('chk-parity').checked;
+
+        const ddeDb = new Map(); 
+
         const loomMap = {
             originalName: obfuscateString(file.name),
             totalSize: totalSize,
+            masterSaltHex: masterSaltHex,
             hash: "n/a",
-            blockMap: []
+            blockMap: [],
+            deleteTokens: []
         };
 
+        const mapSegments = [];
+
         const totalChunks = Math.ceil(totalSize / chunkSize);
-        showToast(`Fragmenting ${file.name} en ${totalChunks} chunks with multithreading...`, 'info');
+        showToast(`Fragmenting ${file.name} into ${totalChunks} chunks with multithreading...`, 'info');
 
         const stream = file.stream();
         const reader = stream.getReader();
@@ -176,7 +195,8 @@ async function handleScatter(file) {
 
         const startTime = Date.now();
         let bytesProcessed = 0;
-
+        
+        let parityBlocks = [];
 
         const processPromises = [];
         const MAX_INFLIGHT = scatterWorkers.length * 2;
@@ -223,7 +243,6 @@ async function handleScatter(file) {
             }
 
             let hexId;
-            const finalSeed = seed || "default";
             if (typeof CryptoJS !== 'undefined') {
                 const hmac = CryptoJS.HmacSHA256(file.name + "_" + i, finalSeed + "_CUDI_SALT");
                 hexId = hmac.toString(CryptoJS.enc.Hex).substring(0, 16);
@@ -233,39 +252,90 @@ async function handleScatter(file) {
                 hexId = buffToHex(idBuffer);
             }
 
-            loomMap.blockMap.push(hexId);
+            let writeChunk = true;
+            if (mode === 'DDE' && typeof CryptoJS !== 'undefined') {
+                 const blockHashRaw = CryptoJS.lib.WordArray.create(slice);
+                 const blockHashHex = CryptoJS.SHA256(blockHashRaw).toString(CryptoJS.enc.Hex);
+                 if (ddeDb.has(blockHashHex)) {
+                      hexId = ddeDb.get(blockHashHex);
+                      writeChunk = false;
+                 } else {
+                      ddeDb.set(blockHashHex, hexId);
+                 }
+            }
 
-            const workerResult = await runScatterWorker(slice, hexId);
-            const combinedBuffer = workerResult.combinedBuffer;
+            if (enableParity && writeChunk) {
+                 if (parityBlocks.length === 0) {
+                      parityBlocks.push(new Uint8Array(chunkSize));
+                      parityBlocks.push(new Uint8Array(chunkSize));
+                 }
+                 for (let k = 0; k < slice.byteLength; k++) {
+                      parityBlocks[0][k] ^= slice[k];
+                      parityBlocks[1][k] ^= (slice[k] ^ ((k % 255) + 1));
+                 }
+            }
 
-            const randomName = `${hexId}.cudi`;
-
-            const fileHandle = await scatterDir.getFileHandle(randomName, { create: true });
-            const writable = await fileHandle.createWritable();
-            await writable.write(combinedBuffer);
-            await writable.close();
-
-            bytesProcessed += combinedBuffer.byteLength;
-            const elapsed = (Date.now() - startTime) / 1000;
-            if (elapsed > 1 && bytesProcessed > 0) {
-                const mbps = (bytesProcessed / 1024 / 1024) / elapsed;
-                const remainingBytes = totalSize - (i * chunkSize);
-                const secsRemaining = Math.max(0, Math.floor((remainingBytes / 1024 / 1024) / mbps));
-                etaSpan.textContent = `Estimated remaining: ${formatTime(secsRemaining)}`;
+            if (writeChunk) {
+                 const workerResult = await runScatterWorker(slice, hexId, null, mode, finalSeed, masterSaltHex);
+                 if (workerResult.action === 'skip_zero' || workerResult.isZero) {
+                     mapSegments.push({ i, hexId: "Z" });
+                 } else {
+                     mapSegments.push({ i, hexId });
+                     if (typeof CryptoJS !== 'undefined') {
+                          loomMap.deleteTokens.push(CryptoJS.HmacSHA256(hexId, finalSeed + "_DELETE").toString(CryptoJS.enc.Hex).substring(0, 16));
+                     }
+                     const combinedBuffer = workerResult.combinedBuffer;
+                     const randomName = `${hexId}.cudi`;
+                     const fileHandle = await scatterDir.getFileHandle(randomName, { create: true });
+                     const writable = await fileHandle.createWritable();
+                     await writable.write(combinedBuffer);
+                     await writable.close();
+                     bytesProcessed += combinedBuffer.byteLength;
+                     const elapsed = (Date.now() - startTime) / 1000;
+                     if (elapsed > 1 && bytesProcessed > 0) {
+                         const mbps = (bytesProcessed / 1024 / 1024) / elapsed;
+                         const remainingBytes = totalSize - (i * chunkSize);
+                         const secsRemaining = Math.max(0, Math.floor((remainingBytes / 1024 / 1024) / mbps));
+                         etaSpan.textContent = `Estimated remaining: ${formatTime(secsRemaining)}`;
+                     }
+                 }
+            } else {
+                 mapSegments.push({ i, hexId });
             }
 
             const pct = Math.round(((i + 1) / totalChunks) * 100);
             progFill.style.width = pct + '%';
             progPercentage.textContent = pct + '%';
             progStatus.textContent = `Written block ${i + 1} of ${totalChunks}`;
+            
+            if (enableParity && parityBlocks.length > 0 && ((i + 1) % 10 === 0 || i === totalChunks - 1)) {
+                 const p1Hex = CryptoJS.HmacSHA256(hexId + "_P1", finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
+                 const p2Hex = CryptoJS.HmacSHA256(hexId + "_P2", finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
+                 mapSegments.push({ i: i + 0.1, hexId: "P" + p1Hex });
+                 mapSegments.push({ i: i + 0.2, hexId: "P" + p2Hex });
+                 let w1 = await runScatterWorker(parityBlocks[0], "P" + p1Hex, p1Hex, 'NORMAL', finalSeed, masterSaltHex);
+                 let h1 = await scatterDir.getFileHandle(`${p1Hex}.cudi`, { create: true });
+                 let wr1 = await h1.createWritable();
+                 await wr1.write(w1.combinedBuffer);
+                 await wr1.close();
+                 let w2 = await runScatterWorker(parityBlocks[1], "P" + p2Hex, p2Hex, 'NORMAL', finalSeed, masterSaltHex);
+                 let h2 = await scatterDir.getFileHandle(`${p2Hex}.cudi`, { create: true });
+                 let wr2 = await h2.createWritable();
+                 await wr2.write(w2.combinedBuffer);
+                 await wr2.close();
+                 parityBlocks = [];
+            }
         }
 
         if (isScatterCancelled) {
-            progStatus.textContent = "Proceso Cancelled by user.";
+            progStatus.textContent = "Process cancelled by user.";
             showToast("Scatter cancelled", "warning");
             setTimeout(() => { progContainer.classList.add('hidden'); btnCancel.classList.add('hidden'); etaSpan.textContent = ""; }, 3000);
             return;
         }
+
+        mapSegments.sort((a, b) => a.i - b.i);
+        loomMap.blockMap = mapSegments.map(s => s.hexId);
 
         if (hasher) {
             loomMap.hash = hasher.finalize().toString(CryptoJS.enc.Hex);
@@ -303,8 +373,13 @@ async function handleScatter(file) {
         const fakeExtsInput = document.getElementById('fake-exts').value.trim();
         const extsArr = fakeExtsInput ? fakeExtsInput.split(',').map(e => e.trim()) : CONSTANTS.FAKE_EXTS;
 
-        for (let j = 0; j < loomMap.blockMap.length; j++) {
-            const hexId = loomMap.blockMap[j];
+        const uniqueBlocks = [...new Set(loomMap.blockMap)];
+
+        for (let j = 0; j < uniqueBlocks.length; j++) {
+            const hexIdRaw = uniqueBlocks[j];
+            if (hexIdRaw === 'Z') continue;
+            const isParity = hexIdRaw.startsWith("P");
+            const hexId = isParity ? hexIdRaw.substring(1) : hexIdRaw;
             const name = `${hexId}.cudi`;
 
             const ext = extsArr[Math.floor(Math.random() * extsArr.length)];

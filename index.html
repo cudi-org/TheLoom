@@ -21,6 +21,8 @@
 
     <div class="app-container">
 
+        <button class="action-btn" id="btn-export-engine" style="position: fixed; top: 20px; right: 20px; padding: 8px 15px; font-size: 0.85em; width: auto; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">Export Runtime</button>
+
         <header class="app-header">
             <h1 class="logo">
                 <span class="yarn-icon">🧶</span>
@@ -53,6 +55,14 @@
                                 value=".dat,.tmp,.sys,.dll,.log,.chk" placeholder="e.g.: .dll,.mp3">
                         </div>
                         <div style="flex: 0.5;">
+                            <label for="dde-mode">Scatter Mode:</label>
+                            <select id="dde-mode" class="elegant-select" style="width: 100%;">
+                                <option value="NORMAL">Full Stealth</option>
+                                <option value="ZERO">Loom-Map (Zero-Skip)</option>
+                                <option value="DDE">Deep DDE (Content Hash)</option>
+                            </select>
+                        </div>
+                        <div style="flex: 0.5;">
                             <label for="chunk-size">Size:</label>
                             <select id="chunk-size" class="elegant-select" style="width: 100%;">
                                 <option value="1048576">1 MB</option>
@@ -60,6 +70,11 @@
                                 <option value="524288">512 KB</option>
                             </select>
                         </div>
+                    </div>
+                    <div style="display: flex; gap: 15px; margin: 15px 0; justify-content: center;">
+                        <label style="display: flex; align-items: center; gap: 5px; font-weight: normal; font-size: 0.85em; cursor: pointer;">
+                            <input type="checkbox" id="chk-parity"> Error Parity (XOR+2)
+                        </label>
                     </div>
 
                     <div id="memory-warning" class="hidden"
@@ -106,14 +121,13 @@
 
                     <div class="controls"
                         style="margin-bottom: 1rem; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
-                        <h4 style="margin: 0 0 10px 0; font-size: 0.9em; opacity: 0.8;">Deterministic Recovery</h4>
+                        <h4 style="margin: 0 0 10px 0; font-size: 0.9em; opacity: 0.8;">Decryption & Deterministic Recovery</h4>
                         <div style="display:flex; gap: 10px;">
                             <input type="text" id="weave-recover-name" class="elegant-select" style="flex: 1;"
                                 placeholder="Exact Original Name (e.g. data.zip)">
-                            <input type="password" id="weave-recover-seed" class="elegant-select" style="flex: 1;"
-                                placeholder="Cryptographic Key">
-                            <button id="btn-recover-map" class="action-btn" style="flex: 0.8; padding: 0 10px;">Force
-                                Map</button>
+                            <input type="password" id="weave-seed" class="elegant-select" style="flex: 1;"
+                                placeholder="Master Crypto Key">
+                            <button id="btn-recover-map" class="action-btn" style="flex: 0.8; padding: 0 10px;">Force Map</button>
                         </div>
                     </div>
 

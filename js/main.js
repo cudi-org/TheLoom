@@ -9,6 +9,8 @@ document.addEventListener('DOMContentLoaded', () => {
     initTabs();
     initScatter();
     initWeave();
+    const btnExport = document.getElementById('btn-export-engine');
+    if (btnExport) btnExport.addEventListener('click', bundleApp);
 });
 
 function initTabs() {
