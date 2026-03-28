@@ -1,8 +1,12 @@
 #  The Loom
 
-**The Loom** is a production-grade, secure, and highly resilient in-browser file fragmentation and reconstruction system. It allows you to scatter large files into obfuscated, encrypted fragments (noise) and later "weave" them back into the original file seamlessly using a `.loom` map. 
+**The Loom** is a high-performance, secure, and highly resilient in-browser file fragmentation system. It allows you to scatter large files into encrypted, obfuscated fragments (noise) and later "weave" them back into the original file seamlessly. This reconstruction is performed using a .loom metadata map or, in its absence, a deterministic recovery flow that identifies and reassembles the required fragments using only the original filename and the cryptographic seed.
+
+**Note:** Regardless of the method used (Map or Deterministic), the encrypted fragments (.cudi / disguised files) must be provided to the Weaver for reconstruction to occur.
 
 Built with performance, stealth, and fault-tolerance in mind, The Loom operates entirely on the client-side within the browser, leveraging **Web Workers** for multi-threading and the **Origin Private File System (OPFS)** for memory-efficient streaming of extremely large files (e.g., `.ova` or `.iso` images).
+
+**Link to the web** https://www.cudi-org.com/TheLoom/
 
 ---
 
@@ -19,7 +23,7 @@ Built with performance, stealth, and fault-tolerance in mind, The Loom operates 
 
 ---
 
-## 🐈 The "Schrödinger's File": Probabilistic Existence
+##  The "Schrödinger's File": Probabilistic Existence
 
 I have named this concept the **"Schrödinger's File"** for a fundamental technical reason:
 
@@ -52,31 +56,13 @@ The application interfaces through two primary modes:
 - **Vanilla JavaScript (ES6+)** - Pure client-side execution logic.
 - **Web Workers API** - Off-main-thread dynamic worker pool for heavy cryptography.
 - **Origin Private File System (OPFS)** - High-performance temporary local storage.
-- **CryptoJS** - Provides AES-256-GCM and PBKDF2 logic.
+- **Web Crypto API & CryptoJS** - Provides AES-256-GCM and PBKDF2 logic.
 - **fflate** - Extremely fast and lightweight streaming Zip / Deflate implementation in JS.
 - **HTML5 / CSS3** - Responsive, glassmorphism-themed UI.
-
----
-
-##  Getting Started
-
-Because The Loom relies entirely on Client-Side technologies (and strict Origin Private File System contexts), it must be served through a local HTTP Server. 
-
-1. **Clone or Download** this repository.
-2. **Run a local static server**. For example, using Python:
-   ```bash
-   python -m http.server 8000
-   ```
-   *Or using Node.js:*
-   ```bash
-   npx serve .
-   ```
-3. **Open your browser** and navigate to `http://localhost:8000`
-4. Enjoy private, serverless file scattering.
 
 ---
 
 ##  License & Privacy
 
 All operations in **The Loom** occur locally on your machine. No data, seeds, hashes, or fragments are ever transmitted to any external server. 
-*(See the `LICENSE` file for full terms and conditions).*
+*(See the `LICENSE` file for full terms and conditions).*   
