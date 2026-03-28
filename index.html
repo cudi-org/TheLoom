@@ -21,7 +21,7 @@
 
     <div class="app-container">
 
-        <button class="action-btn" id="btn-export-engine" style="position: fixed; top: 20px; right: 20px; padding: 8px 15px; font-size: 0.85em; width: auto; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">Export Runtime</button>
+        <button class="action-btn" id="btn-export-engine" style="position: absolute; top: 20px; right: 20px; padding: 8px 15px; font-size: 0.85em; width: auto; z-index: 1000; box-shadow: 0 4px 15px rgba(0,0,0,0.3);">Export Runtime</button>
 
         <header class="app-header">
             <h1 class="logo">
@@ -43,7 +43,7 @@
                     <h2>Fragment your files</h2>
                     <p class="instruction">Convert any file into secure noise and a .loom map.</p>
 
-                    <div style="display: flex; gap: 10px; margin-top: 10px;">
+                    <div class="responsive-flex" style="margin-top: 10px;">
                         <div style="flex: 1;">
                             <label for="cudi-seed">Seed (Crypto Key):</label>
                             <input type="password" id="cudi-seed" class="elegant-select" style="width: 100%;"
@@ -119,15 +119,14 @@
                         <input type="file" id="file-weave" class="file-weave" multiple hidden>
                     </div>
 
-                    <div class="controls"
-                        style="margin-bottom: 1rem; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
+                    <div style="margin-bottom: 1rem; background: rgba(0,0,0,0.2); padding: 15px; border-radius: 8px;">
                         <h4 style="margin: 0 0 10px 0; font-size: 0.9em; opacity: 0.8;">Decryption & Deterministic Recovery</h4>
-                        <div style="display:flex; gap: 10px;">
+                        <div class="responsive-flex">
                             <input type="text" id="weave-recover-name" class="elegant-select" style="flex: 1;"
                                 placeholder="Exact Original Name (e.g. data.zip)">
                             <input type="password" id="weave-seed" class="elegant-select" style="flex: 1;"
                                 placeholder="Master Crypto Key">
-                            <button id="btn-recover-map" class="action-btn" style="flex: 0.8; padding: 0 10px;">Force Map</button>
+                            <button id="btn-recover-map" class="action-btn" style="flex: 0.8; padding: 0 10px; margin-top: 0;">Force Map</button>
                         </div>
                     </div>
 
