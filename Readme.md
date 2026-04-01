@@ -1,16 +1,18 @@
-#  The Loom
+# The Loom
 
-**The Loom** is a high-performance, secure, and highly resilient in-browser file fragmentation system. It allows you to scatter large files into encrypted, obfuscated fragments (noise) and later "weave" them back into the original file seamlessly. This reconstruction is performed using a .loom metadata map or, in its absence, a deterministic recovery flow that identifies and reassembles the required fragments using only the original filename and the cryptographic seed.
-
-**Note:** Regardless of the method used (Map or Deterministic), the encrypted fragments (.cudi / disguised files) must be provided to the Weaver for reconstruction to occur.
-
-Built with performance, stealth, and fault-tolerance in mind, The Loom operates entirely on the client-side within the browser, leveraging **Web Workers** for multi-threading and the **Origin Private File System (OPFS)** for memory-efficient streaming of extremely large files (e.g., `.ova` or `.iso` images).
+Client-side distributed storage protocol using AES-256-GCM and OPFS.
 
 **Link to the web** https://www.cudi-org.com/TheLoom/
 
 ---
 
-##  Core Features
+## Security Disclaimer
+
+This is a PoC. Current iteration uses PBKDF2; migration to Argon2id is scheduled for Milestone 1.
+
+---
+
+## Core Features
 
 - **Advanced Cryptography:** Files are secured using **AES-256-GCM** authenticated encryption with **PBKDF2** key derivation, ensuring maximum security before the data is scattered.
 - **Memory-Efficient Streaming:** Replaces memory-intensive operations with robust reading/writing to **OPFS**. This enables multi-gigabyte files to be processed incrementally without crashing the browser's RAM.
@@ -20,17 +22,6 @@ Built with performance, stealth, and fault-tolerance in mind, The Loom operates 
 - **Deterministic Recovery:** No `.loom` map file? No problem. You can forcefully reconstruct your file using an *Exact Original Name* and a *Master Crypto Key* using the deterministic map generation mechanism.
 - **Self-Contained Portable Runtime:** Want to extract data offline in the future? Use the **Export Runtime** feature to download a fully functional, self-hosted HTML mini-version of The Loom, guaranteeing data access forever without external dependencies.
 - **Multi-threaded Worker Pool:** Features dynamic scaling using Web Workers for parallel processing of cryptographic hashing, encryption, and chunk generation.
-
----
-
-##  The "Schrödinger's File": Probabilistic Existence
-
-I have named this concept the **"Schrödinger's File"** for a fundamental technical reason:
-
-- **State of Scatter**: While the file is in a state of Scatter (dispersed), the original file as a unit of information has ceased to exist in the logical space. What remains is a "cloud of probabilities" (`.cudi` fragments).
-- **Data Superposition**: An individual fragment is not "a part" of the file (as it would be in a split `.zip`), but a cryptographic transformation that, on its own, holds no coherent information.
-- **State Collapse (Weaving)**: The original file only "collapses" back into reality when the Weaver observes enough fragments and applies the correct cryptographic key.
-- **Quantum Resilience (Parity)**: Thanks to the XOR parity, the system allows a piece of the "box" to be missing, yet the final file still emerges intact. The "observer" (the user with their `.loom` map) forces the reconstruction of the original reality out of entropy.
 
 ---
 

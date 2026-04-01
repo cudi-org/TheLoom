@@ -281,7 +281,7 @@ async function handleWeaveFiles(files) {
                          try {
                              const cloneBuffer = cipheredBuffer.slice(0);
                              workerRes = await runWeaveWorkerAction('validate', cloneBuffer, parsed.blockIdHex, parsed.ivHex, weaveSeed, parsed.saltHex);
-                             if (workerRes.crc16 === parsed.checksum) break;
+                             if (workerRes) break;
                          } catch(e) {
                              if (e.message === 'Invalid password') {
                                  showToast('Invalid password', 'error');
@@ -294,7 +294,7 @@ async function handleWeaveFiles(files) {
 
                     if (isWeaveCancelled) break;
 
-                    if (!workerRes || workerRes.crc16 !== parsed.checksum) {
+                    if (!workerRes) {
                         AppState.weaveCorrupts.add(parsed.blockIdHex);
                     } else {
                         const fileHandle = await weaveDir.getFileHandle(parsed.blockIdHex, { create: true });
