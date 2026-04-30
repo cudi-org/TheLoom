@@ -145,12 +145,12 @@ function initWeaveWorkers(num = navigator.hardwareConcurrency || 4) {
     weaveWorkerIdx = 0;
 }
 
-const runWeaveWorkerAction = (action, buffer, hexId, ivHex, password, saltHex) => new Promise((resolve, reject) => {
+const runWeaveWorkerAction = (action, buffer, hexId, headerBuffer, ivBytes, rawAesKey, rawHmacKey) => new Promise((resolve, reject) => {
     weavePendingTasks.set(hexId, {resolve, reject});
     const w = weaveWorkers[weaveWorkerIdx];
     weaveWorkerIdx = (weaveWorkerIdx + 1) % weaveWorkers.length;
     const transfer = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
-    w.postMessage({ action, buffer, hexId, ivHex, password, saltHex }, [transfer]);
+    w.postMessage({ action, buffer, hexId, headerBuffer, ivBytes, rawAesKey, rawHmacKey }, [transfer]);
 });
 
 async function handleWeaveFiles(files) {
@@ -215,7 +215,7 @@ async function handleWeaveFiles(files) {
 
     try {
         const weaveSeedInput = document.getElementById('weave-seed') ? document.getElementById('weave-seed').value : "";
-        const weaveSeed = weaveSeedInput ? weaveSeedInput.trim() : "default";
+        const weaveSeed = weaveSeedInput ? weaveSeedInput.trim() : "";
 
         for (let f of files) {
             if (isWeaveCancelled) break;
@@ -243,15 +243,16 @@ async function handleWeaveFiles(files) {
 
             if (f.name.endsWith('.loom')) {
                 updateHeaderStatus(`Loading map ${f.name}...`);
-                const text = await f.text();
+                if(!weaveSeed) { showToast("Master Key is required to read Map", "error"); continue; }
+                const mapBuf = await f.arrayBuffer();
                 try {
+                    const text = await LoomCore.decryptMap(mapBuf, weaveSeed);
                     AppState.weaveLoomData = JSON.parse(text);
-                    const cleanName = deobfuscateString(AppState.weaveLoomData.originalName);
-                    AppState.weaveLoomData.originalName = cleanName;
+                    const cleanName = AppState.weaveLoomData.originalName;
                     document.getElementById('weave-file-name').textContent = cleanName;
                     showToast(`Map loaded`, 'success');
                 } catch (e) {
-                    showToast("Invalid .loom file", 'error');
+                    showToast("Invalid .loom file or wrong password", 'error');
                 }
             }
             else {
@@ -279,12 +280,14 @@ async function handleWeaveFiles(files) {
                     let retries = 0;
                     while (retries < 3) {
                          try {
+                             if(!weaveSeed) throw new Error('Invalid password');
+                             const rawKeys = await LoomCore.deriveRawKeys(weaveSeed, parsed.saltHex);
                              const cloneBuffer = cipheredBuffer.slice(0);
-                             workerRes = await runWeaveWorkerAction('validate', cloneBuffer, parsed.blockIdHex, parsed.ivHex, weaveSeed, parsed.saltHex);
+                             workerRes = await runWeaveWorkerAction('validate', cloneBuffer, parsed.blockIdHex, headerBuf, parsed.ivBytes, rawKeys.aes, rawKeys.hmac);
                              if (workerRes) break;
                          } catch(e) {
-                             if (e.message === 'Invalid password') {
-                                 showToast('Invalid password', 'error');
+                             if (e.message === 'Invalid password' || e.message === 'Header Validation Failed') {
+                                 showToast(e.message, 'error');
                                  isWeaveCancelled = true;
                                  break;
                              }
@@ -387,53 +390,60 @@ async function readAndDecryptFragment(hexId, weaveSeed, parsedSaltHex) {
     const parsed = parseFragmentHeader(headerBuf);
     const cipheredBlob = fileObj.slice(CONSTANTS.HEADER_SIZE);
     const cipheredBuffer = await cipheredBlob.arrayBuffer();
-    const workerRes = await runWeaveWorkerAction('weave', cipheredBuffer, hexId, parsed.ivHex, weaveSeed, parsed.saltHex || parsedSaltHex);
+    const rawKeys = await LoomCore.deriveRawKeys(weaveSeed, parsed.saltHex || parsedSaltHex);
+    const workerRes = await runWeaveWorkerAction('weave', cipheredBuffer, hexId, headerBuf, parsed.ivBytes, rawKeys.aes, rawKeys.hmac);
     return workerRes.pureBuffer;
 }
 
 async function recoverLostBlock(missingIndex, trueBlockMap, fullBlockMap, guessedChunkSize, weaveSeed, parsedSaltHex) {
     const groupStart = Math.floor(missingIndex / 10) * 10;
     const groupEnd = Math.min(groupStart + 10, trueBlockMap.length);
+    const totalData = groupEnd - groupStart;
     
-    let p1Hex = null;
+    let p1Hex = null, p2Hex = null;
     let trueBlocksCount = 0;
     for (let i = 0; i < fullBlockMap.length; i++) {
         if (!fullBlockMap[i].startsWith("P")) {
             trueBlocksCount++;
             if (trueBlocksCount === groupEnd) {
                 p1Hex = fullBlockMap[i + 1];
+                p2Hex = fullBlockMap[i + 2];
                 break;
             }
         }
     }
 
-    if (!p1Hex || p1Hex === "Z") {
-        throw new Error("Parity missing");
-    }
-
-    let recoveredData = new Uint8Array(guessedChunkSize);
-
-    const p1Id = p1Hex.substring(1);
-    if (!AppState.weaveFragments.has(p1Id)) throw new Error("Parity file missing");
-    const p1Buffer = await readAndDecryptFragment(p1Hex, weaveSeed, parsedSaltHex);
+    const availableShards = [];
+    const dataIndexes = [];
     
-    for (let k = 0; k < guessedChunkSize; k++) {
-        recoveredData[k] ^= p1Buffer[k];
-    }
-
     for (let i = groupStart; i < groupEnd; i++) {
-        if (i === missingIndex) continue;
-        
         const siblingHex = trueBlockMap[i];
-        if (siblingHex === 'Z') continue;
-        
-        const siblingBuffer = await readAndDecryptFragment(siblingHex, weaveSeed, parsedSaltHex);
-        for (let k = 0; k < guessedChunkSize; k++) {
-            recoveredData[k] ^= siblingBuffer[k];
+        if (siblingHex !== 'Z' && AppState.weaveFragments.has(siblingHex) && !AppState.weaveCorrupts.has(siblingHex)) {
+             availableShards.push(new Uint8Array(await readAndDecryptFragment(siblingHex, weaveSeed, parsedSaltHex)));
+             dataIndexes.push(i - groupStart);
+        } else if (siblingHex === 'Z') {
+             availableShards.push(new Uint8Array(guessedChunkSize));
+             dataIndexes.push(i - groupStart);
         }
     }
+    
+    if (availableShards.length < totalData) {
+        if (p1Hex && AppState.weaveFragments.has(p1Hex.substring(1))) {
+            availableShards.push(new Uint8Array(await readAndDecryptFragment(p1Hex, weaveSeed, parsedSaltHex)));
+            dataIndexes.push(totalData);
+        }
+        if (availableShards.length < totalData && p2Hex && AppState.weaveFragments.has(p2Hex.substring(1))) {
+            availableShards.push(new Uint8Array(await readAndDecryptFragment(p2Hex, weaveSeed, parsedSaltHex)));
+            dataIndexes.push(totalData + 1);
+        }
+    }
+    
+    if (availableShards.length < totalData) throw new Error("Parity missing - not enough fragments");
 
-    return recoveredData;
+    const rs = new ReedSolomon();
+    const recovered = rs.reconstruct(availableShards.slice(0, totalData), dataIndexes.slice(0, totalData), totalData);
+    
+    return recovered[missingIndex - groupStart];
 }
 
 async function doReconstruction() {
@@ -477,7 +487,8 @@ async function doReconstruction() {
         }
 
         const weaveSeedInput = document.getElementById('weave-seed') ? document.getElementById('weave-seed').value : "";
-        const weaveSeed = weaveSeedInput ? weaveSeedInput.trim() : "default";
+        const weaveSeed = weaveSeedInput ? weaveSeedInput.trim() : "";
+        if (!weaveSeed) throw new Error("Master Key is mandatory");
 
         const batchSize = 6;
         for (let i = 0; i < trueBlockMap.length; i += batchSize) {
@@ -506,7 +517,8 @@ async function doReconstruction() {
                  const cipheredBlob = fileObj.slice(CONSTANTS.HEADER_SIZE);
                  const cipheredBuffer = await cipheredBlob.arrayBuffer();
                  try {
-                     const workerRes = await runWeaveWorkerAction('weave', cipheredBuffer, hexId, parsed.ivHex, weaveSeed, parsed.saltHex || parsedSaltHex);
+                     const rawKeys = await LoomCore.deriveRawKeys(weaveSeed, parsed.saltHex || parsedSaltHex);
+                     const workerRes = await runWeaveWorkerAction('weave', cipheredBuffer, hexId, headerBuf, parsed.ivBytes, rawKeys.aes, rawKeys.hmac);
                      return workerRes.pureBuffer;
                  } catch(e) {
                      return new Uint8Array(guessedChunkSize).fill(0);

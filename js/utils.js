@@ -1,38 +1,23 @@
 const WORKER_CODE = `
-const CONSTANTS = { HEADER_SIZE: 36 };
-
-function hexToBuff(hexString) {
-    if (!hexString) return new Uint8Array(0).buffer;
-    return new Uint8Array(hexString.match(/.{1,2}/g).map(byte => parseInt(byte, 16))).buffer;
-}
-
-function createFragmentHeader(hexId, ivBuff, saltBuff) {
-    const header = new ArrayBuffer(CONSTANTS.HEADER_SIZE);
-    const view = new DataView(header);
-    view.setBigUint64(0, BigInt("0x" + (hexId.startsWith('P') ? hexId.substring(1) : hexId)));
-    new Uint8Array(header).set(new Uint8Array(ivBuff), 8);
-    new Uint8Array(header).set(new Uint8Array(saltBuff), 20);
-    return header;
-}
+const CONSTANTS = { HEADER_SIZE: 40 };
 
 const keyCache = new Map();
 
-async function getMasterKey(password, saltHex) {
-    const cacheKey = password + ":" + saltHex;
-    if (keyCache.has(cacheKey)) return keyCache.get(cacheKey);
-    const keyMaterial = await crypto.subtle.importKey("raw", new TextEncoder().encode(password), { name: "PBKDF2" }, false, ["deriveBits", "deriveKey"]);
-    const salt = hexToBuff(saltHex);
-    const aesKey = await crypto.subtle.deriveKey(
-        { name: "PBKDF2", salt: salt, iterations: 100000, hash: "SHA-256" },
-        keyMaterial, { name: "AES-GCM", length: 256 }, false, ["encrypt", "decrypt"]
-    );
-    keyCache.set(cacheKey, aesKey);
-    return aesKey;
+async function getKeys(rawAesKey, rawHmacKey) {
+    const aesHash = new Uint8Array(rawAesKey).join(',');
+    if (keyCache.has(aesHash)) return keyCache.get(aesHash);
+    const aesCryptoKey = await crypto.subtle.importKey("raw", rawAesKey, { name: "AES-GCM" }, false, ["encrypt", "decrypt"]);
+    const hmacCryptoKey = await crypto.subtle.importKey("raw", rawHmacKey, { name: "HMAC", hash: "SHA-256" }, false, ["sign", "verify"]);
+    const keys = { aes: aesCryptoKey, hmac: hmacCryptoKey };
+    keyCache.set(aesHash, keys);
+    return keys;
 }
 
 self.onmessage = async function(e) {
     const data = e.data;
     try {
+        const { aes, hmac } = await getKeys(data.rawAesKey, data.rawHmacKey);
+
         if (data.action === 'scatter') {
             if (data.mode === 'ZERO') {
                 const rem = data.buffer.byteLength % 4;
@@ -52,25 +37,43 @@ self.onmessage = async function(e) {
                     return;
                 }
             }
-            let combined;
+            
+            const ivSig = await crypto.subtle.sign("HMAC", hmac, data.buffer);
+            const iv = new Uint8Array(ivSig).slice(0, 12);
+            
+            const encryptedSlice = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, aes, data.buffer);
+            
+            const baseHeader = new ArrayBuffer(36);
+            const view = new DataView(baseHeader);
             const pureId = data.hexId.startsWith('P') ? data.hexId.substring(1) : data.hexId;
-            const saltBuff = hexToBuff(data.saltHex);
+            view.setBigUint64(0, BigInt("0x" + pureId));
+            new Uint8Array(baseHeader).set(iv, 8);
+            new Uint8Array(baseHeader).set(new Uint8Array(data.masterSaltBuffer), 20);
             
-            const aesKey = await getMasterKey(data.password, data.saltHex);
-            const iv = crypto.getRandomValues(new Uint8Array(12));
-            const encryptedSlice = await crypto.subtle.encrypt({ name: "AES-GCM", iv: iv }, aesKey, data.buffer);
+            const headerSig = await crypto.subtle.sign("HMAC", hmac, baseHeader);
+            const hmacTag = new Uint8Array(headerSig).slice(0, 4);
             
-            const header = createFragmentHeader(data.hexId, iv.buffer, saltBuff);
-            combined = new Uint8Array(header.byteLength + encryptedSlice.byteLength);
+            const header = new ArrayBuffer(40);
+            new Uint8Array(header).set(new Uint8Array(baseHeader), 0);
+            new Uint8Array(header).set(hmacTag, 36);
+
+            const combined = new Uint8Array(40 + encryptedSlice.byteLength);
             combined.set(new Uint8Array(header), 0);
-            combined.set(new Uint8Array(encryptedSlice), header.byteLength);
+            combined.set(new Uint8Array(encryptedSlice), 40);
             self.postMessage({ action: 'scatter_done', combinedBuffer: combined.buffer, hexId: data.hexId }, [combined.buffer]);
+
         } else if (data.action === 'validate' || data.action === 'weave') {
-            const pureId = data.hexId.startsWith('P') ? data.hexId.substring(1) : data.hexId;
-            const aesKey = await getMasterKey(data.password, data.saltHex);
-            const ivBytes = hexToBuff(data.ivHex);
+            const buffer40 = data.headerBuffer;
+            const hmacTag = new Uint8Array(buffer40, 36, 4);
+            const baseHeader = buffer40.slice(0, 36);
             
-            const pureBuffer = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(ivBytes) }, aesKey, data.buffer);
+            const headerSig = await crypto.subtle.sign("HMAC", hmac, baseHeader);
+            const expectedTag = new Uint8Array(headerSig).slice(0, 4);
+            for(let i=0; i<4; i++){
+                if(hmacTag[i] !== expectedTag[i]) throw new Error("Header Validation Failed");
+            }
+            
+            const pureBuffer = await crypto.subtle.decrypt({ name: "AES-GCM", iv: new Uint8Array(data.ivBytes) }, aes, data.buffer);
             
             if (data.action === 'validate') {
                 self.postMessage({ action: 'validate_done', crc16: 0, hexId: data.hexId });
@@ -91,7 +94,7 @@ async function bundleApp() {
         const load = async u => await (await fetch(u)).text();
         let index = await load('index.html');
         const style = await load('style.css');
-        const scripts = ['js/constants.js', 'js/utils.js', 'js/protocol.js', 'js/worker.js', 'js/scatter.js', 'js/weaver.js', 'js/main.js'];
+        const scripts = ['js/constants.js', 'js/utils.js', 'js/protocol.js', 'js/core.js', 'js/scatter.js', 'js/weaver.js', 'js/main.js'];
         index = index.replace(/<link rel="stylesheet".*?>/i, '<style>' + style + '</style>');
         for (let s of scripts) {
             const js = await load(s);
@@ -148,30 +151,6 @@ function downloadBlob(blob, filename) {
 
 const delay = ms => new Promise(res => setTimeout(res, ms));
 
-function obfuscateString(str) {
-    const encoder = new TextEncoder();
-    const arr = encoder.encode(str);
-    const XOR_KEY = 0xAA;
-    for (let i = 0; i < arr.length; i++) {
-        arr[i] ^= XOR_KEY;
-    }
-    return btoa(String.fromCharCode.apply(null, arr));
-}
-
-function deobfuscateString(b64) {
-    try {
-        const strBytes = atob(b64);
-        const arr = new Uint8Array(strBytes.length);
-        const XOR_KEY = 0xAA;
-        for (let i = 0; i < strBytes.length; i++) {
-            arr[i] = strBytes.charCodeAt(i) ^ XOR_KEY;
-        }
-        const decoder = new TextDecoder();
-        return decoder.decode(arr);
-    } catch (e) {
-        return "Unknown File";
-    }
-}
 
 async function sha256Hash(message) {
     const msgBuffer = new TextEncoder().encode(message);

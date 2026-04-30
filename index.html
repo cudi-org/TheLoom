@@ -11,6 +11,7 @@
     <link rel="stylesheet" href="style.css">
     <script src="https://cdn.jsdelivr.net/npm/fflate@0.8.2/umd/index.js"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/crypto-js/4.1.1/crypto-js.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hash-wasm@4.11.0/dist/argon2.umd.min.js"></script>
 </head>
 
 <body>
@@ -49,14 +50,9 @@
 
                     <div class="responsive-flex" style="margin-top: 10px;">
                         <div style="flex: 1;">
-                            <label for="cudi-seed">Seed (Crypto Key):</label>
+                            <label for="cudi-seed">Master Key (Mandatory):</label>
                             <input type="password" id="cudi-seed" class="elegant-select" style="width: 100%;"
-                                placeholder="Secret Key (Empty = default)">
-                        </div>
-                        <div style="flex: 1;">
-                            <label for="fake-exts">Disguise:</label>
-                            <input type="text" id="fake-exts" class="elegant-select" style="width: 100%;"
-                                value=".dat,.tmp,.sys,.dll,.log,.chk" placeholder="e.g.: .dll,.mp3">
+                                placeholder="Required to encrypt/decrypt">
                         </div>
                         <div style="flex: 0.5;">
                             <label for="dde-mode">Scatter Mode:</label>
@@ -77,7 +73,7 @@
                     </div>
                     <div style="display: flex; gap: 15px; margin: 15px 0; justify-content: center;">
                         <label style="display: flex; align-items: center; gap: 5px; font-weight: normal; font-size: 0.85em; cursor: pointer;">
-                            <input type="checkbox" id="chk-parity"> Error Parity (XOR+2)
+                            <input type="checkbox" id="chk-parity" checked> Reed-Solomon Tolerance (Adds 20% Overhead)
                         </label>
                     </div>
 
@@ -178,6 +174,7 @@
     <script src="js/constants.js"></script>
     <script src="js/utils.js"></script>
     <script src="js/protocol.js"></script>
+    <script src="js/core.js"></script>
     <script src="js/scatter.js"></script>
     <script src="js/weaver.js"></script>
     <script src="js/main.js"></script>

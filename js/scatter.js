@@ -52,12 +52,12 @@ function initScatterWorkers(num = navigator.hardwareConcurrency || 4) {
     currentWorkerIdx = 0;
 }
 
-const runScatterWorker = (buffer, hexId, fakeHexId = null, mode = 'NORMAL', password = 'default', saltHex = '') => new Promise((resolve) => {
+const runScatterWorker = (buffer, hexId, fakeHexId = null, mode = 'NORMAL', rawAesKey, rawHmacKey, masterSaltBuffer) => new Promise((resolve) => {
     pendingTasks.set(hexId, resolve);
     const w = scatterWorkers[currentWorkerIdx];
     currentWorkerIdx = (currentWorkerIdx + 1) % scatterWorkers.length;
     const transfer = buffer instanceof ArrayBuffer ? buffer : buffer.buffer;
-    w.postMessage({ action: 'scatter', buffer, hexId, fakeHexId, mode, password, saltHex }, [transfer]);
+    w.postMessage({ action: 'scatter', buffer, hexId, fakeHexId, mode, rawAesKey, rawHmacKey, masterSaltBuffer }, [transfer]);
 });
 
 function formatTime(secs) {
@@ -77,10 +77,17 @@ async function handleScatter(file) {
     const totalSize = file.size;
     const seedInput = document.getElementById('cudi-seed').value;
     const seed = seedInput ? seedInput.trim() : "";
-    const finalSeed = seed || "default";
+    if (!seed) { showToast("Master key is mandatory", "error"); return; }
+    const finalSeed = seed;
 
     const masterSaltBytes = crypto.getRandomValues(new Uint8Array(16));
     const masterSaltHex = buffToHex(masterSaltBytes);
+    let rawKeys;
+    try {
+        rawKeys = await LoomCore.deriveRawKeys(finalSeed, masterSaltHex);
+    } catch(e) {
+        showToast("Error deriving keys", "error"); return;
+    }
 
     if (totalSize > 500 * 1024 * 1024) {
         chunkSize = Math.max(chunkSize, 4 * 1024 * 1024);
@@ -172,7 +179,7 @@ async function handleScatter(file) {
         const ddeDb = new Map(); 
 
         const loomMap = {
-            originalName: obfuscateString(file.name),
+            originalName: file.name,
             totalSize: totalSize,
             masterSaltHex: masterSaltHex,
             hash: "n/a",
@@ -196,7 +203,7 @@ async function handleScatter(file) {
         const startTime = Date.now();
         let bytesProcessed = 0;
         
-        let parityBlocks = [];
+        let dataChunksForRS = [];
 
         const processPromises = [];
         const MAX_INFLIGHT = scatterWorkers.length * 2;
@@ -265,18 +272,11 @@ async function handleScatter(file) {
             }
 
             if (enableParity && writeChunk) {
-                 if (parityBlocks.length === 0) {
-                      parityBlocks.push(new Uint8Array(chunkSize));
-                      parityBlocks.push(new Uint8Array(chunkSize));
-                 }
-                 for (let k = 0; k < slice.byteLength; k++) {
-                      parityBlocks[0][k] ^= slice[k];
-                      parityBlocks[1][k] ^= (slice[k] ^ ((k % 255) + 1));
-                 }
+                 dataChunksForRS.push({ slice: new Uint8Array(slice), hexId, i });
             }
 
             if (writeChunk) {
-                 const workerResult = await runScatterWorker(slice, hexId, null, mode, finalSeed, masterSaltHex);
+                 const workerResult = await runScatterWorker(slice, hexId, null, mode, rawKeys.aes, rawKeys.hmac, masterSaltBytes.buffer);
                  if (workerResult.action === 'skip_zero' || workerResult.isZero) {
                      mapSegments.push({ i, hexId: "Z" });
                  } else {
@@ -285,7 +285,7 @@ async function handleScatter(file) {
                           loomMap.deleteTokens.push(CryptoJS.HmacSHA256(hexId, finalSeed + "_DELETE").toString(CryptoJS.enc.Hex).substring(0, 16));
                      }
                      const combinedBuffer = workerResult.combinedBuffer;
-                     const randomName = `${hexId}.cudi`;
+                     const randomName = `${hexId}`;
                      const fileHandle = await scatterDir.getFileHandle(randomName, { create: true });
                      const writable = await fileHandle.createWritable();
                      await writable.write(combinedBuffer);
@@ -308,22 +308,27 @@ async function handleScatter(file) {
             progPercentage.textContent = pct + '%';
             progStatus.textContent = `Written block ${i + 1} of ${totalChunks}`;
             
-            if (enableParity && parityBlocks.length > 0 && ((i + 1) % 10 === 0 || i === totalChunks - 1)) {
-                 const p1Hex = CryptoJS.HmacSHA256(hexId + "_P1", finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
-                 const p2Hex = CryptoJS.HmacSHA256(hexId + "_P2", finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
-                 mapSegments.push({ i: i + 0.1, hexId: "P" + p1Hex });
-                 mapSegments.push({ i: i + 0.2, hexId: "P" + p2Hex });
-                 let w1 = await runScatterWorker(parityBlocks[0], "P" + p1Hex, p1Hex, 'NORMAL', finalSeed, masterSaltHex);
-                 let h1 = await scatterDir.getFileHandle(`${p1Hex}.cudi`, { create: true });
-                 let wr1 = await h1.createWritable();
-                 await wr1.write(w1.combinedBuffer);
-                 await wr1.close();
-                 let w2 = await runScatterWorker(parityBlocks[1], "P" + p2Hex, p2Hex, 'NORMAL', finalSeed, masterSaltHex);
-                 let h2 = await scatterDir.getFileHandle(`${p2Hex}.cudi`, { create: true });
-                 let wr2 = await h2.createWritable();
-                 await wr2.write(w2.combinedBuffer);
-                 await wr2.close();
-                 parityBlocks = [];
+            if (enableParity && dataChunksForRS.length > 0 && (dataChunksForRS.length === 10 || i === totalChunks - 1)) {
+                 const numParity = 2; // Fixed to 2 for 20% overhead if groups of 10
+                 const rs = new ReedSolomon();
+                 const shardsToEncode = dataChunksForRS.map(c => {
+                     const s = new Uint8Array(chunkSize);
+                     s.set(c.slice);
+                     return s;
+                 });
+                 const parityShards = rs.encode(shardsToEncode, numParity);
+                 
+                 for (let p = 0; p < numParity; p++) {
+                     const baseId = dataChunksForRS[0].hexId;
+                     const pHex = CryptoJS.HmacSHA256(baseId + "_P" + p, finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
+                     mapSegments.push({ i: dataChunksForRS[dataChunksForRS.length-1].i + 0.1 + (p * 0.1), hexId: "P" + pHex });
+                     let wRes = await runScatterWorker(parityShards[p], "P" + pHex, pHex, 'NORMAL', rawKeys.aes, rawKeys.hmac, masterSaltBytes.buffer);
+                     let hRes = await scatterDir.getFileHandle(`${pHex}`, { create: true });
+                     let wrRes = await hRes.createWritable();
+                     await wrRes.write(wRes.combinedBuffer);
+                     await wrRes.close();
+                 }
+                 dataChunksForRS = [];
             }
         }
 
@@ -370,9 +375,6 @@ async function handleScatter(file) {
             }
         });
 
-        const fakeExtsInput = document.getElementById('fake-exts').value.trim();
-        const extsArr = fakeExtsInput ? fakeExtsInput.split(',').map(e => e.trim()) : CONSTANTS.FAKE_EXTS;
-
         const uniqueBlocks = [...new Set(loomMap.blockMap)];
 
         for (let j = 0; j < uniqueBlocks.length; j++) {
@@ -380,11 +382,9 @@ async function handleScatter(file) {
             if (hexIdRaw === 'Z') continue;
             const isParity = hexIdRaw.startsWith("P");
             const hexId = isParity ? hexIdRaw.substring(1) : hexIdRaw;
-            const name = `${hexId}.cudi`;
+            const name = `${hexId}`;
 
-            const ext = extsArr[Math.floor(Math.random() * extsArr.length)];
-            const pureExt = ext.startsWith('.') ? ext : `.${ext}`;
-            const zName = `dx_${hexId.substring(0, 6)}${pureExt}`;
+            const zName = `dx_${hexId.substring(0, 8)}`;
 
             const handle = await scatterDir.getFileHandle(name);
             const subFile = await handle.getFile();
@@ -407,10 +407,12 @@ async function handleScatter(file) {
             }
         }
 
-        const loomMetaBuffer = new TextEncoder().encode(JSON.stringify(loomMap, null, 2));
-        const loomDef = new fflate.ZipPassThrough(`${obfuscateString(file.name).substring(0, 6)}.loom`);
+        const encryptedLoomMap = await LoomCore.encryptMap(JSON.stringify(loomMap, null, 2), finalSeed);
+        const randomMapBytes = crypto.getRandomValues(new Uint8Array(4));
+        const randomMapName = buffToHex(randomMapBytes);
+        const loomDef = new fflate.ZipPassThrough(`${randomMapName}.loom`);
         zip.add(loomDef);
-        loomDef.push(loomMetaBuffer, true);
+        loomDef.push(new Uint8Array(encryptedLoomMap), true);
         await wrapPromise;
         zip.end();
 
