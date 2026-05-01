@@ -271,8 +271,13 @@ async function handleScatter(file) {
                  }
             }
 
+            let myParityBatch = null;
             if (enableParity && writeChunk) {
                  dataChunksForRS.push({ slice: new Uint8Array(slice), hexId, i });
+                 if (dataChunksForRS.length === 10 || (i === totalChunks - 1 && dataChunksForRS.length > 0)) {
+                     myParityBatch = dataChunksForRS;
+                     dataChunksForRS = [];
+                 }
             }
 
             if (writeChunk) {
@@ -308,10 +313,10 @@ async function handleScatter(file) {
             progPercentage.textContent = pct + '%';
             progStatus.textContent = `Written block ${i + 1} of ${totalChunks}`;
             
-            if (enableParity && dataChunksForRS.length > 0 && (dataChunksForRS.length === 10 || i === totalChunks - 1)) {
+            if (myParityBatch) {
                  const numParity = 2; // Fixed to 2 for 20% overhead if groups of 10
                  const rs = new ReedSolomon();
-                 const shardsToEncode = dataChunksForRS.map(c => {
+                 const shardsToEncode = myParityBatch.map(c => {
                      const s = new Uint8Array(chunkSize);
                      s.set(c.slice);
                      return s;
@@ -319,16 +324,15 @@ async function handleScatter(file) {
                  const parityShards = rs.encode(shardsToEncode, numParity);
                  
                  for (let p = 0; p < numParity; p++) {
-                     const baseId = dataChunksForRS[0].hexId;
+                     const baseId = myParityBatch[0].hexId;
                      const pHex = CryptoJS.HmacSHA256(baseId + "_P" + p, finalSeed + "_CUDI_SALT").toString(CryptoJS.enc.Hex).substring(0, 16);
-                     mapSegments.push({ i: dataChunksForRS[dataChunksForRS.length-1].i + 0.1 + (p * 0.1), hexId: "P" + pHex });
+                     mapSegments.push({ i: myParityBatch[myParityBatch.length-1].i + 0.1 + (p * 0.1), hexId: "P" + pHex });
                      let wRes = await runScatterWorker(parityShards[p], "P" + pHex, pHex, 'NORMAL', rawKeys.aes, rawKeys.hmac, masterSaltBytes.buffer);
                      let hRes = await scatterDir.getFileHandle(`${pHex}`, { create: true });
                      let wrRes = await hRes.createWritable();
                      await wrRes.write(wRes.combinedBuffer);
                      await wrRes.close();
                  }
-                 dataChunksForRS = [];
             }
         }
 
@@ -369,6 +373,8 @@ async function handleScatter(file) {
 
                     progStatus.textContent = "Scatter completed";
                     etaSpan.textContent = "";
+                    progFill.style.width = '100%';
+                    progPercentage.textContent = '100%';
                     showToast("ZIP Streaming process finished successfully.", "success");
                     setTimeout(() => { progContainer.classList.add('hidden'); btnCancel.classList.add('hidden'); }, 3000);
                 });
@@ -377,7 +383,14 @@ async function handleScatter(file) {
 
         const uniqueBlocks = [...new Set(loomMap.blockMap)];
 
+        let zipFilesProcessed = 0;
+        const totalZipFiles = uniqueBlocks.length + 1; // +1 for the .loom map
+
+        let lastYieldTime = Date.now();
+
         for (let j = 0; j < uniqueBlocks.length; j++) {
+            if (isScatterCancelled) break;
+            
             const hexIdRaw = uniqueBlocks[j];
             if (hexIdRaw === 'Z') continue;
             const isParity = hexIdRaw.startsWith("P");
@@ -394,10 +407,16 @@ async function handleScatter(file) {
             const stream = subFile.stream();
             const reader = stream.getReader();
             while (true) {
+                if (isScatterCancelled) break;
                 const { value, done } = await reader.read();
                 if (value) {
                     def.push(value);
                     await wrapPromise;
+                    
+                    if (Date.now() - lastYieldTime > 30) {
+                        await delay(0);
+                        lastYieldTime = Date.now();
+                    }
                 }
                 if (done) {
                     def.push(new Uint8Array(0), true);
@@ -405,16 +424,43 @@ async function handleScatter(file) {
                     break;
                 }
             }
+            
+            // Delete fragment from storage to free RAM (crucial for VirtualStorage fallback)
+            try {
+                if (scatterDir.removeEntry) {
+                    await scatterDir.removeEntry(name);
+                }
+            } catch (e) {
+                // Ignore if not supported or fails
+            }
+            
+            zipFilesProcessed++;
+            const pct = Math.round((zipFilesProcessed / totalZipFiles) * 100);
+            progFill.style.width = pct + '%';
+            progPercentage.textContent = pct + '%';
+            progStatus.textContent = `Zipping ${zipFilesProcessed} of ${totalZipFiles} chunks...`;
+            
+            // Yield to event loop to allow V8 Garbage Collector to clean up memory
+            await delay(0);
         }
 
-        const encryptedLoomMap = await LoomCore.encryptMap(JSON.stringify(loomMap, null, 2), finalSeed);
-        const randomMapBytes = crypto.getRandomValues(new Uint8Array(4));
-        const randomMapName = buffToHex(randomMapBytes);
-        const loomDef = new fflate.ZipPassThrough(`${randomMapName}.loom`);
-        zip.add(loomDef);
-        loomDef.push(new Uint8Array(encryptedLoomMap), true);
-        await wrapPromise;
-        zip.end();
+        if (!isScatterCancelled) {
+            const encryptedLoomMap = await LoomCore.encryptMap(JSON.stringify(loomMap, null, 2), finalSeed);
+            const randomMapBytes = crypto.getRandomValues(new Uint8Array(4));
+            const randomMapName = buffToHex(randomMapBytes);
+            const loomDef = new fflate.ZipPassThrough(`${randomMapName}.loom`);
+            zip.add(loomDef);
+            loomDef.push(new Uint8Array(encryptedLoomMap), true);
+            await wrapPromise;
+            
+            zipFilesProcessed++;
+            const finalPct = Math.round((zipFilesProcessed / totalZipFiles) * 100);
+            progFill.style.width = finalPct + '%';
+            progPercentage.textContent = finalPct + '%';
+            progStatus.textContent = "Finalizing ZIP file...";
+            
+            zip.end();
+        }
 
     } catch (e) {
         console.error(e);
